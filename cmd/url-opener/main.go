@@ -31,12 +31,7 @@ func main() {
 		*opener = "yt-dlp"
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		url := extractURL(scanner.Text())
-		if url == "" {
-			continue
-		}
+	openURL := func(url string) {
 		cmd := exec.Command(*opener, url)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -44,6 +39,27 @@ func main() {
 			fmt.Fprintf(os.Stderr, "url-opener: %v\n", err)
 			os.Exit(1)
 		}
+	}
+
+	args := flag.Args()
+	if len(args) == 1 && args[0] == "-" {
+		args = nil
+	}
+
+	if len(args) > 0 {
+		for _, url := range args {
+			openURL(url)
+		}
+		return
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		url := extractURL(scanner.Text())
+		if url == "" {
+			continue
+		}
+		openURL(url)
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "url-opener: %v\n", err)
