@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 )
 
 func defaultNoteFile() string {
@@ -31,7 +32,8 @@ func printHelp(w io.Writer, file string) {
 	fmt.Fprintln(w, "    note list                    Display all notes without timestamps")
 	fmt.Fprintln(w, "    note list -t <tag>[,<tag>]   Filter notes by one or more tags")
 	fmt.Fprintln(w, "    note tags                    List all tags used in the notes file")
-	fmt.Fprintln(w, "    note edit                    Open notes in nvim")
+	fmt.Fprintln(w, "    note edit                    Open notes file in nvim")
+	fmt.Fprintln(w, "    note edit <id>               Edit a single note inline (vi-mode)")
 	fmt.Fprintln(w, "    note delete <id>...          Delete notes by id (space or comma separated)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Use -f / --file <path> with any action to target a specific file:")
@@ -328,6 +330,108 @@ func deleteNotes(w io.Writer, file string, ids []int) error {
 	return nil
 }
 
+func editNoteByID(w io.Writer, file string, id int) error {
+	if !hasContent(file) {
+		return fmt.Errorf("note [%d] not found", id)
+	}
+
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	var currentText string
+	noteLineIdx := -1
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if m := noteLineRe.FindStringSubmatch(line); m != nil {
+			if lineID, _ := strconv.Atoi(m[1]); lineID == id {
+				currentText = m[2]
+				noteLineIdx = len(lines) - 1
+			}
+		}
+	}
+	f.Close()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if noteLineIdx == -1 {
+		return fmt.Errorf("note [%d] not found", id)
+	}
+
+	// Use zsh's vared builtin: inline line editor with real vi key bindings.
+	// bindkey -v enables vi mode; vared pre-fills $result with the current text.
+	// The edited value is written to a temp file so we can capture it without
+	// interfering with the interactive terminal session.
+	tmp, err := os.CreateTemp("", "note-edit-*.txt")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	prompt := fmt.Sprintf("[%d] › ", id)
+	// $1 = initial text, $2 = prompt string, $3 = output file
+	const script = `bindkey -v; result=$1; vared -p "$2" result; printf '%s' "$result" > "$3"`
+	cmd := exec.Command("zsh", "-c", script, "--", currentText, prompt, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 0 {
+			fmt.Fprintln(w, "Edit cancelled.")
+			return nil
+		}
+		return err
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return err
+	}
+	newText := strings.TrimSpace(processTags(string(data)))
+	if newText == "" {
+		fmt.Fprintln(w, "Note text cannot be empty, edit cancelled.")
+		return nil
+	}
+	if newText == currentText {
+		fmt.Fprintln(w, "No changes.")
+		return nil
+	}
+
+	const sep = "** — "
+	idx := strings.Index(lines[noteLineIdx], sep)
+	if idx == -1 {
+		return fmt.Errorf("could not parse note line [%d]", id)
+	}
+	lines[noteLineIdx] = lines[noteLineIdx][:idx+len(sep)] + newText
+
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	out, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	bw := bufio.NewWriter(out)
+	for _, line := range lines {
+		fmt.Fprintln(bw, line)
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, "✓ Note [%d] updated\n", id)
+	return nil
+}
+
 func appendNote(w io.Writer, file, text string) error {
 	dir := filepath.Dir(file)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -423,7 +527,16 @@ func main() {
 		case "tags":
 			err = listTags(os.Stdout, file)
 		case "edit":
-			err = editNotes(file)
+			if len(contentArgs) > 1 {
+				id, parseErr := strconv.Atoi(contentArgs[1])
+				if parseErr != nil || id < 1 {
+					fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
+					os.Exit(1)
+				}
+				err = editNoteByID(os.Stdout, file, id)
+			} else {
+				err = editNotes(file)
+			}
 		case "delete":
 			if len(contentArgs) < 2 {
 				fmt.Fprintln(os.Stderr, "note: 'delete' requires at least one id")
