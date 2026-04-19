@@ -1,6 +1,3 @@
-# Fish completions for note.
-# Install: ln -s (realpath completions/note.fish) ~/.config/fish/completions/note.fish
-
 # Disable file completions for the top-level command
 complete -c note -f
 
@@ -49,12 +46,34 @@ complete -c note -n "not __fish_seen_subcommand_from $actions" -a tags   -d 'Lis
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a edit   -d 'Open notes in nvim (or edit by id)'
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a delete -d 'Delete notes by id'
 
-# add: complete #tag and ,,tag[,tag].. tokens
+# add: complete #tag and ,,tag[,tag].. tokens.
+# For ,,tag: a custom Tab binding handles single-match insertion without the
+# trailing space fish would normally add, so the user can chain: ,,music,mo<tab>.
+# For multiple matches fish uses the -a candidates and inserts the common prefix
+# (which also has no trailing space), so the binding falls through for that case.
 complete -c note -n "__fish_seen_subcommand_from add" \
     -a "(set -l tok (commandline -ct)
         if string match -q '#*' -- \$tok; or string match -q ',,*' -- \$tok
             note completions --file (__note_file) \$tok 2>/dev/null
         end)"
+
+function __note_add_tab
+    set -l tok (commandline -ct)
+    if string match -q ',,*' -- $tok
+        set -l prev (commandline -opc)
+        if contains note $prev; and contains add $prev
+            set -l matches (note completions --file (__note_file) $tok 2>/dev/null)
+            if test (count $matches) -eq 1
+                # Single match: insert with trailing comma — no space, ready to chain
+                commandline -t -- $matches[1],
+                commandline -f repaint
+                return
+            end
+        end
+    end
+    commandline -f complete
+end
+bind \t __note_add_tab
 
 # list: -t / --tag with tag completion
 complete -c note -n "__fish_seen_subcommand_from list" -s t -l tag -r -d 'Filter by tag(s)' -a "(__note_tags)"
