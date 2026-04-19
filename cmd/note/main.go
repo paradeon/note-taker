@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"note/internal/mdurl"
 )
 
 func defaultNoteFile() string {
@@ -217,15 +219,15 @@ var tagRe = regexp.MustCompile(`#(\w+)`)
 
 var rawURLRe = regexp.MustCompile(`https?://\S+`)
 
-// processURLs replaces bare URLs in text with markdown links via mdurl.
-// Silently leaves a URL unchanged if mdurl fails or is not installed.
+// processURLs replaces bare URLs in text with markdown links.
+// Silently leaves a URL unchanged if the title cannot be fetched.
 func processURLs(text string) string {
-	return rawURLRe.ReplaceAllStringFunc(text, func(url string) string {
-		out, err := exec.Command("mdurl", url).Output()
-		if err != nil {
-			return url
+	return rawURLRe.ReplaceAllStringFunc(text, func(rawURL string) string {
+		title := mdurl.FetchTitle(rawURL)
+		if title == "" {
+			return rawURL
 		}
-		return strings.TrimSpace(string(out))
+		return "[" + title + "](" + rawURL + ")"
 	})
 }
 
