@@ -27,10 +27,14 @@ func fetchYouTubeTitle(rawURL string) string {
 	}
 	defer resp.Body.Close()
 	var data struct {
-		Title string `json:"title"`
+		Title      string `json:"title"`
+		AuthorName string `json:"author_name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return ""
+	}
+	if data.AuthorName != "" {
+		return data.AuthorName + " - " + data.Title
 	}
 	return data.Title
 }
