@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -623,5 +626,192 @@ func TestPrintHelp_ContainsKeyStrings(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("help output missing %q", want)
 		}
+	}
+}
+
+// ── hasAnyTag ────────────────────────────────────────────────────────────────
+
+func TestHasAnyTag_Match(t *testing.T) {
+	if !hasAnyTag("fix login #auth", []string{"auth"}) {
+		t.Error("expected match for #auth")
+	}
+}
+
+func TestHasAnyTag_NoMatch(t *testing.T) {
+	if hasAnyTag("fix login #auth", []string{"backend"}) {
+		t.Error("expected no match")
+	}
+}
+
+func TestHasAnyTag_CaseInsensitive(t *testing.T) {
+	if !hasAnyTag("fix #Auth", []string{"auth"}) {
+		t.Error("expected case-insensitive match")
+	}
+}
+
+func TestHasAnyTag_MultipleTagsFirstMatches(t *testing.T) {
+	if !hasAnyTag("fix #auth", []string{"backend", "auth"}) {
+		t.Error("expected match when any tag matches")
+	}
+}
+
+func TestHasAnyTag_EmptyTags(t *testing.T) {
+	if hasAnyTag("fix #auth", nil) {
+		t.Error("expected no match with empty tag list")
+	}
+}
+
+// ── collectTagNames ──────────────────────────────────────────────────────────
+
+func TestCollectTagNames_NoFile(t *testing.T) {
+	tags := collectTagNames("/tmp/no-such-file-xyz.md")
+	if len(tags) != 0 {
+		t.Errorf("expected nil/empty, got %v", tags)
+	}
+}
+
+func TestCollectTagNames_ExtractsTags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #auth\n- note #backend\n")
+	tags := collectTagNames(path)
+	if len(tags) != 2 {
+		t.Fatalf("expected 2 tags, got %v", tags)
+	}
+	if tags[0] != "auth" || tags[1] != "backend" {
+		t.Errorf("got %v", tags)
+	}
+}
+
+func TestCollectTagNames_Deduplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #auth\n- note #auth\n")
+	tags := collectTagNames(path)
+	if len(tags) != 1 {
+		t.Errorf("expected 1 unique tag, got %v", tags)
+	}
+}
+
+func TestCollectTagNames_PreservesOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #zzz\n- note #aaa\n")
+	tags := collectTagNames(path)
+	if len(tags) != 2 || tags[0] != "zzz" || tags[1] != "aaa" {
+		t.Errorf("expected insertion order, got %v", tags)
+	}
+}
+
+// ── printCompletions ─────────────────────────────────────────────────────────
+
+func TestPrintCompletions_HashPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #auth\n- note #backend\n")
+	var buf bytes.Buffer
+	printCompletions(&buf, path, "#au")
+	out := buf.String()
+	if !strings.Contains(out, "#auth") {
+		t.Errorf("expected #auth, got %q", out)
+	}
+	if strings.Contains(out, "#backend") {
+		t.Errorf("backend should not match #au prefix, got %q", out)
+	}
+}
+
+func TestPrintCompletions_DoubleCommaPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #music\n- note #movies\n")
+	var buf bytes.Buffer
+	printCompletions(&buf, path, ",,mu")
+	out := buf.String()
+	if !strings.Contains(out, ",,music") {
+		t.Errorf("expected ,,music, got %q", out)
+	}
+	if strings.Contains(out, ",,movies") {
+		t.Errorf("movies should not match ,,mu prefix, got %q", out)
+	}
+}
+
+func TestPrintCompletions_DoubleCommaChained(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #music\n- note #movies\n")
+	var buf bytes.Buffer
+	printCompletions(&buf, path, ",,music,mo")
+	out := buf.String()
+	if !strings.Contains(out, ",,music,movies") {
+		t.Errorf("expected ,,music,movies, got %q", out)
+	}
+}
+
+func TestPrintCompletions_NoMatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "- note #auth\n")
+	var buf bytes.Buffer
+	printCompletions(&buf, path, "#xyz")
+	if buf.Len() != 0 {
+		t.Errorf("expected no output, got %q", buf.String())
+	}
+}
+
+func TestPrintCompletions_NoFile(t *testing.T) {
+	var buf bytes.Buffer
+	printCompletions(&buf, "/tmp/no-such-file-xyz.md", "#au")
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for missing file, got %q", buf.String())
+	}
+}
+
+// ── processURLs ──────────────────────────────────────────────────────────────
+
+func TestProcessURLs_SkipsAlreadyFormattedLink(t *testing.T) {
+	input := "[Go](https://golang.org)"
+	got := processURLs(input)
+	if got != input {
+		t.Errorf("already-formatted link should be unchanged: got %q", got)
+	}
+}
+
+func TestProcessURLs_SkipsAlreadyFormattedLinkMixed(t *testing.T) {
+	input := "see [Go](https://golang.org) for details"
+	got := processURLs(input)
+	if got != input {
+		t.Errorf("already-formatted link should be unchanged: got %q", got)
+	}
+}
+
+func TestProcessURLs_ExpandsBareURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><head><title>Test Page</title></head><body></body></html>`)
+	}))
+	defer srv.Close()
+
+	got := processURLs(srv.URL)
+	want := fmt.Sprintf("[Test Page](%s)", srv.URL)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestProcessURLs_FallsBackToURLOnEmptyTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>no title</body></html>`)
+	}))
+	defer srv.Close()
+
+	got := processURLs(srv.URL)
+	if got != srv.URL {
+		t.Errorf("expected bare URL fallback, got %q", got)
+	}
+}
+
+func TestProcessURLs_ExpandsBareURLInSentence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><head><title>My Site</title></head></html>`)
+	}))
+	defer srv.Close()
+
+	input := "check out " + srv.URL + " today"
+	got := processURLs(input)
+	want := fmt.Sprintf("check out [My Site](%s) today", srv.URL)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

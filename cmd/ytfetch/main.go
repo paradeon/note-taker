@@ -70,10 +70,57 @@ func section(quiet bool, title string) {
 	}
 }
 
-func fetchMeta(url string) (*meta, error) {
-	out, err := exec.Command("yt-dlp",
-		"--dump-single-json", "--no-playlist", "--quiet", url).Output()
+// boolShortFlags lists single-char flags that take no value.
+// Value flags (b) are intentionally excluded so -bsafari stays intact.
+const boolShortFlags = "dgTcpstlDnrCSaqh"
+
+// expandArgs expands combined short flags like -dc into -d -c.
+// A value flag (b) ends expansion: -bsafari stays as-is.
+func expandArgs(args []string) []string {
+	var out []string
+	for _, arg := range args {
+		if len(arg) > 2 && arg[0] == '-' && arg[1] != '-' {
+			allBool := true
+			for _, ch := range arg[1:] {
+				if !strings.ContainsRune(boolShortFlags, ch) {
+					allBool = false
+					break
+				}
+			}
+			if allBool {
+				for _, ch := range arg[1:] {
+					out = append(out, "-"+string(ch))
+				}
+				continue
+			}
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func cookieArgs(fromBrowser, file string) []string {
+	var args []string
+	if fromBrowser != "" {
+		args = append(args, "--cookies-from-browser", fromBrowser)
+	}
+	if file != "" {
+		args = append(args, "--cookies", file)
+	}
+	return args
+}
+
+func fetchMeta(url string, ckArgs []string) (*meta, error) {
+	args := append([]string{"--dump-single-json", "--no-playlist", "--quiet"}, ckArgs...)
+	args = append(args, url)
+	cmd := exec.Command("yt-dlp", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
 		return nil, fmt.Errorf("failed to fetch metadata — check the URL or your network")
 	}
 	var m meta
@@ -83,14 +130,16 @@ func fetchMeta(url string) (*meta, error) {
 	return &m, nil
 }
 
-func fetchCommentsMeta(url string) (*meta, error) {
-	out, err := exec.Command("yt-dlp",
+func fetchCommentsMeta(url string, ckArgs []string) (*meta, error) {
+	args := append([]string{
 		"--write-comments",
 		"--extractor-args", "youtube:comment_sort=top,max_comments=20",
 		"--dump-single-json",
 		"--no-playlist",
 		"--no-warnings",
-		url).Output()
+	}, ckArgs...)
+	args = append(args, url)
+	out, err := exec.Command("yt-dlp", args...).Output()
 	if err != nil || len(out) == 0 {
 		return nil, fmt.Errorf("could not fetch comments")
 	}
@@ -257,7 +306,7 @@ func printSubs(m *meta, quiet bool) {
 	fmt.Println()
 }
 
-func printTranscript(url, vidID string, quiet bool) {
+func printTranscript(url, vidID string, quiet bool, ckArgs []string) {
 	section(quiet, "TRANSCRIPT")
 	subDir := "ytfetch_" + vidID
 	if err := os.MkdirAll(subDir, 0755); err != nil {
@@ -265,14 +314,16 @@ func printTranscript(url, vidID string, quiet bool) {
 		return
 	}
 
-	cmd := exec.Command("yt-dlp",
+	args := append([]string{
 		"--write-subs", "--write-auto-subs",
 		"--sub-langs", "en.*",
 		"--sub-format", "vtt/srt/best",
 		"--skip-download",
 		"--quiet",
 		"-o", filepath.Join(subDir, "%(title)s.%(ext)s"),
-		url)
+	}, ckArgs...)
+	args = append(args, url)
+	cmd := exec.Command("yt-dlp", args...)
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
 
@@ -330,9 +381,9 @@ func parseSubtitle(path string) []string {
 	return lines
 }
 
-func printComments(url string, quiet bool) {
+func printComments(url string, quiet bool, ckArgs []string) {
 	section(quiet, "COMMENTS / DISCUSSIONS")
-	m, err := fetchCommentsMeta(url)
+	m, err := fetchCommentsMeta(url, ckArgs)
 	if err != nil || len(m.Comments) == 0 {
 		fmt.Fprintln(os.Stderr, "✗ No comments found.")
 		return
@@ -395,7 +446,7 @@ func printThumbnail(vidID string, quiet bool) {
 	fmt.Println()
 }
 
-func printSimilar(m *meta, vidID string, quiet bool) {
+func printSimilar(m *meta, vidID string, quiet bool, ckArgs []string) {
 	section(quiet, "SIMILAR / RELATED VIDEOS")
 	if len(m.RelatedVideos) > 0 {
 		limit := 10
@@ -421,12 +472,14 @@ func printSimilar(m *meta, vidID string, quiet bool) {
 		fmt.Println("⟳ Trying YouTube mix playlist…")
 	}
 	mixURL := "https://www.youtube.com/watch?v=" + vidID + "&list=RD" + vidID
-	out, err := exec.Command("yt-dlp",
+	mixArgs := append([]string{
 		"--flat-playlist",
 		"--print", "%(title)s|https://youtu.be/%(id)s|%(channel)s",
 		"--playlist-end", "10",
 		"--quiet",
-		mixURL).Output()
+	}, ckArgs...)
+	mixArgs = append(mixArgs, mixURL)
+	out, err := exec.Command("yt-dlp", mixArgs...).Output()
 	if err != nil || len(out) == 0 {
 		fmt.Fprintln(os.Stderr, "✗ No related videos found.")
 		return
@@ -466,86 +519,111 @@ Flags:
   -S, --subs          Print subscriber count
   -a, --all           Fetch everything
   -q, --quiet         Only output raw value(s), no labels or chrome
+  -b, --cookies-from-browser  Load cookies from browser (e.g. chrome, firefox, safari)
+      --cookies               Path to Netscape cookies file
   -h, --help          Show this help
 
 Dependencies: yt-dlp, jq, curl`)
 }
 
+// orderedAction is a flag.Value that appends its name to a shared slice on each Set,
+// preserving the order flags appear on the command line.
+type orderedAction struct {
+	name    string
+	actions *[]string
+}
+
+func (o *orderedAction) String() string    { return "" }
+func (o *orderedAction) IsBoolFlag() bool  { return true }
+func (o *orderedAction) Set(_ string) error {
+	*o.actions = append(*o.actions, o.name)
+	return nil
+}
+
+var allActionOrder = []string{
+	"description", "genre", "title", "likes", "dislikes", "views",
+	"creator", "channel", "subs", "transcript", "comments", "thumbnail", "similar",
+}
+
+var metaActions = map[string]bool{
+	"description": true, "genre": true, "title": true, "likes": true,
+	"views": true, "creator": true, "channel": true, "subs": true, "similar": true,
+}
+
 func main() {
 	var (
-		doDescription bool
-		doGenre       bool
-		doTranscript  bool
-		doComments    bool
-		doThumbnail   bool
-		doSimilar     bool
-		doTitle       bool
-		doLikes       bool
-		doDislikes    bool
-		doViews       bool
-		doCreator     bool
-		doChannel     bool
-		doSubs        bool
-		doAll         bool
-		doQuiet       bool
-		doHelp        bool
+		actions            []string
+		doQuiet            bool
+		doHelp             bool
+		cookiesFromBrowser string
+		cookiesFile        string
 	)
 
-	flag.BoolVar(&doDescription, "d", false, "")
-	flag.BoolVar(&doDescription, "description", false, "Print video description")
-	flag.BoolVar(&doGenre, "g", false, "")
-	flag.BoolVar(&doGenre, "genre", false, "Print video category / genre")
-	flag.BoolVar(&doTranscript, "T", false, "")
-	flag.BoolVar(&doTranscript, "transcript", false, "Download transcript")
-	flag.BoolVar(&doComments, "c", false, "")
-	flag.BoolVar(&doComments, "comments", false, "Fetch top comments")
-	flag.BoolVar(&doThumbnail, "p", false, "")
-	flag.BoolVar(&doThumbnail, "thumbnail", false, "Download thumbnail image")
-	flag.BoolVar(&doSimilar, "s", false, "")
-	flag.BoolVar(&doSimilar, "similar", false, "List similar / related videos")
-	flag.BoolVar(&doTitle, "t", false, "")
-	flag.BoolVar(&doTitle, "title", false, "Print video title")
-	flag.BoolVar(&doLikes, "l", false, "")
-	flag.BoolVar(&doLikes, "likes", false, "Print like count")
-	flag.BoolVar(&doDislikes, "D", false, "")
-	flag.BoolVar(&doDislikes, "dislikes", false, "Print dislike count")
-	flag.BoolVar(&doViews, "n", false, "")
-	flag.BoolVar(&doViews, "views", false, "Print view count")
-	flag.BoolVar(&doCreator, "r", false, "")
-	flag.BoolVar(&doCreator, "creator", false, "Print uploader / creator name")
-	flag.BoolVar(&doChannel, "C", false, "")
-	flag.BoolVar(&doChannel, "channel", false, "Print channel name + URL")
-	flag.BoolVar(&doSubs, "S", false, "")
-	flag.BoolVar(&doSubs, "subs", false, "Print subscriber count")
-	flag.BoolVar(&doAll, "a", false, "")
-	flag.BoolVar(&doAll, "all", false, "Fetch everything")
+	act := func(name string) *orderedAction { return &orderedAction{name, &actions} }
+
+	flag.Var(act("description"), "d", "")
+	flag.Var(act("description"), "description", "Print video description")
+	flag.Var(act("genre"), "g", "")
+	flag.Var(act("genre"), "genre", "Print video category / genre")
+	flag.Var(act("transcript"), "T", "")
+	flag.Var(act("transcript"), "transcript", "Download transcript")
+	flag.Var(act("comments"), "c", "")
+	flag.Var(act("comments"), "comments", "Fetch top comments")
+	flag.Var(act("thumbnail"), "p", "")
+	flag.Var(act("thumbnail"), "thumbnail", "Download thumbnail image")
+	flag.Var(act("similar"), "s", "")
+	flag.Var(act("similar"), "similar", "List similar / related videos")
+	flag.Var(act("title"), "t", "")
+	flag.Var(act("title"), "title", "Print video title")
+	flag.Var(act("likes"), "l", "")
+	flag.Var(act("likes"), "likes", "Print like count")
+	flag.Var(act("dislikes"), "D", "")
+	flag.Var(act("dislikes"), "dislikes", "Print dislike count")
+	flag.Var(act("views"), "n", "")
+	flag.Var(act("views"), "views", "Print view count")
+	flag.Var(act("creator"), "r", "")
+	flag.Var(act("creator"), "creator", "Print uploader / creator name")
+	flag.Var(act("channel"), "C", "")
+	flag.Var(act("channel"), "channel", "Print channel name + URL")
+	flag.Var(act("subs"), "S", "")
+	flag.Var(act("subs"), "subs", "Print subscriber count")
+	flag.Var(act("all"), "a", "")
+	flag.Var(act("all"), "all", "Fetch everything")
 	flag.BoolVar(&doQuiet, "q", false, "")
 	flag.BoolVar(&doQuiet, "quiet", false, "Only output raw values")
 	flag.BoolVar(&doHelp, "h", false, "Show help")
 	flag.BoolVar(&doHelp, "help", false, "Show help")
+	flag.StringVar(&cookiesFromBrowser, "b", "", "")
+	flag.StringVar(&cookiesFromBrowser, "cookies-from-browser", "", "Load cookies from browser")
+	flag.StringVar(&cookiesFile, "cookies", "", "Path to Netscape cookies file")
 	flag.Usage = printHelp
-	flag.Parse()
+	flag.CommandLine.Parse(expandArgs(os.Args[1:]))
 
 	if doHelp || flag.NArg() == 0 {
 		printHelp()
 		return
 	}
 
-	if doAll {
-		doDescription = true
-		doGenre = true
-		doTranscript = true
-		doComments = true
-		doThumbnail = true
-		doSimilar = true
-		doTitle = true
-		doLikes = true
-		doDislikes = true
-		doViews = true
-		doCreator = true
-		doChannel = true
-		doSubs = true
+	// expand "all" in place, preserving surrounding order
+	var expanded []string
+	for _, a := range actions {
+		if a == "all" {
+			expanded = append(expanded, allActionOrder...)
+		} else {
+			expanded = append(expanded, a)
+		}
 	}
+	// deduplicate while preserving first occurrence order
+	seen := map[string]bool{}
+	var ordered []string
+	for _, a := range expanded {
+		if !seen[a] {
+			seen[a] = true
+			ordered = append(ordered, a)
+		}
+	}
+
+	ckArgs := cookieArgs(cookiesFromBrowser, cookiesFile)
 
 	arg := flag.Arg(0)
 	var url, vidID string
@@ -566,59 +644,55 @@ func main() {
 		fmt.Println()
 	}
 
-	needMeta := doDescription || doGenre || doTitle || doLikes || doViews ||
-		doCreator || doChannel || doSubs || doSimilar
+	needMeta := false
+	for _, a := range ordered {
+		if metaActions[a] {
+			needMeta = true
+			break
+		}
+	}
 	var md *meta
 	if needMeta {
 		if !doQuiet {
 			fmt.Println("⟳ Fetching metadata…")
 		}
 		var err error
-		md, err = fetchMeta(url)
+		md, err = fetchMeta(url, ckArgs)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "✗", err)
 			os.Exit(1)
 		}
 	}
 
-	if doDescription {
-		printDescription(md, doQuiet)
-	}
-	if doGenre {
-		printGenre(md, doQuiet)
-	}
-	if doTitle {
-		printTitle(md, doQuiet)
-	}
-	if doLikes {
-		printLikes(md, doQuiet)
-	}
-	if doDislikes {
-		printDislikes(vidID, doQuiet)
-	}
-	if doViews {
-		printViews(md, doQuiet)
-	}
-	if doCreator {
-		printCreator(md, doQuiet)
-	}
-	if doChannel {
-		printChannel(md, doQuiet)
-	}
-	if doSubs {
-		printSubs(md, doQuiet)
-	}
-	if doTranscript {
-		printTranscript(url, vidID, doQuiet)
-	}
-	if doComments {
-		printComments(url, doQuiet)
-	}
-	if doThumbnail {
-		printThumbnail(vidID, doQuiet)
-	}
-	if doSimilar {
-		printSimilar(md, vidID, doQuiet)
+	for _, a := range ordered {
+		switch a {
+		case "description":
+			printDescription(md, doQuiet)
+		case "genre":
+			printGenre(md, doQuiet)
+		case "title":
+			printTitle(md, doQuiet)
+		case "likes":
+			printLikes(md, doQuiet)
+		case "dislikes":
+			printDislikes(vidID, doQuiet)
+		case "views":
+			printViews(md, doQuiet)
+		case "creator":
+			printCreator(md, doQuiet)
+		case "channel":
+			printChannel(md, doQuiet)
+		case "subs":
+			printSubs(md, doQuiet)
+		case "transcript":
+			printTranscript(url, vidID, doQuiet, ckArgs)
+		case "comments":
+			printComments(url, doQuiet, ckArgs)
+		case "thumbnail":
+			printThumbnail(vidID, doQuiet)
+		case "similar":
+			printSimilar(md, vidID, doQuiet, ckArgs)
+		}
 	}
 
 	if !doQuiet {

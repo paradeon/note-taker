@@ -217,7 +217,7 @@ func hasAnyTag(line string, tags []string) bool {
 
 var tagRe = regexp.MustCompile(`#(\w+)`)
 
-var rawURLRe = regexp.MustCompile(`https?://\S+`)
+var urlOrMdLinkRe = regexp.MustCompile(`\[[^\]]*\]\(https?://[^)]+\)|https?://\S+`)
 
 func collectTagNames(file string) []string {
 	if !hasContent(file) {
@@ -274,14 +274,17 @@ func printCompletions(w io.Writer, file, word string) {
 }
 
 // processURLs replaces bare URLs in text with markdown links.
-// Silently leaves a URL unchanged if the title cannot be fetched.
+// Already-formatted [text](url) links are left unchanged.
 func processURLs(text string) string {
-	return rawURLRe.ReplaceAllStringFunc(text, func(rawURL string) string {
-		title := mdurl.FetchTitle(rawURL)
-		if title == "" {
-			return rawURL
+	return urlOrMdLinkRe.ReplaceAllStringFunc(text, func(match string) string {
+		if match[0] == '[' {
+			return match
 		}
-		return "[" + title + "](" + rawURL + ")"
+		title := mdurl.FetchTitle(match)
+		if title == "" {
+			return match
+		}
+		return "[" + title + "](" + match + ")"
 	})
 }
 
