@@ -2,6 +2,7 @@ package mdurl
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -43,9 +44,18 @@ func fetchYouTubeTitle(rawURL string) string {
 // Returns an empty string if the title cannot be determined.
 func FetchTitle(rawURL string) string {
 	if isYouTube(rawURL) {
-		return fetchYouTubeTitle(rawURL)
+		if t := fetchYouTubeTitle(rawURL); t != "" {
+			return t
+		}
+		// oEmbed failed (e.g. age-restricted/private) — scrape HTML and strip suffix.
+		t := scrapeHTMLTitle(rawURL)
+		return strings.TrimSuffix(t, " - YouTube")
 	}
 
+	return scrapeHTMLTitle(rawURL)
+}
+
+func scrapeHTMLTitle(rawURL string) string {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return ""
@@ -65,7 +75,7 @@ func FetchTitle(rawURL string) string {
 		n, readErr := resp.Body.Read(tmp)
 		buf = append(buf, tmp[:n]...)
 		if m := htmlTitleRe.FindSubmatch(buf); m != nil {
-			return strings.TrimSpace(string(m[1]))
+			return html.UnescapeString(strings.TrimSpace(string(m[1])))
 		}
 		if readErr != nil {
 			break
