@@ -57,23 +57,6 @@ complete -c note -n "__fish_seen_subcommand_from add" \
             note completions --file (__note_file) \$tok 2>/dev/null
         end)"
 
-function __note_add_tab
-    set -l tok (commandline -ct)
-    if string match -q ',,*' -- $tok
-        set -l prev (commandline -opc)
-        if contains note $prev; and contains add $prev
-            set -l matches (note completions --file (__note_file) $tok 2>/dev/null)
-            if test (count $matches) -eq 1
-                # Single match: insert with trailing comma — no space, ready to chain
-                commandline -t -- $matches[1],
-                commandline -f repaint
-                return
-            end
-        end
-    end
-    commandline -f complete
-end
-bind \t __note_add_tab
 
 # list: -t / --tag with tag completion
 complete -c note -n "__fish_seen_subcommand_from list" -s t -l tag -r -d 'Filter by tag(s)' -a "(__note_tags)"
