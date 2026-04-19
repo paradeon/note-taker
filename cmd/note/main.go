@@ -219,6 +219,60 @@ var tagRe = regexp.MustCompile(`#(\w+)`)
 
 var rawURLRe = regexp.MustCompile(`https?://\S+`)
 
+func collectTagNames(file string) []string {
+	if !hasContent(file) {
+		return nil
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	seen := map[string]bool{}
+	var tags []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		for _, m := range tagRe.FindAllStringSubmatch(scanner.Text(), -1) {
+			t := m[1]
+			if !seen[t] {
+				seen[t] = true
+				tags = append(tags, t)
+			}
+		}
+	}
+	return tags
+}
+
+func printCompletions(w io.Writer, file, word string) {
+	tags := collectTagNames(file)
+	if len(tags) == 0 {
+		return
+	}
+	if strings.HasPrefix(word, "#") {
+		prefix := strings.TrimPrefix(word, "#")
+		for _, t := range tags {
+			if strings.HasPrefix(t, prefix) {
+				fmt.Fprintln(w, "#"+t)
+			}
+		}
+	} else if strings.HasPrefix(word, ",,") {
+		after := strings.TrimPrefix(word, ",,")
+		parts := strings.Split(after, ",")
+		lastPart := parts[len(parts)-1]
+		var fullPrefix string
+		if len(parts) > 1 {
+			fullPrefix = ",," + strings.Join(parts[:len(parts)-1], ",") + ","
+		} else {
+			fullPrefix = ",,"
+		}
+		for _, t := range tags {
+			if strings.HasPrefix(t, lastPart) {
+				fmt.Fprintln(w, fullPrefix+t)
+			}
+		}
+	}
+}
+
 // processURLs replaces bare URLs in text with markdown links.
 // Silently leaves a URL unchanged if the title cannot be fetched.
 func processURLs(text string) string {
@@ -420,9 +474,35 @@ func editNoteByID(w io.Writer, file string, id int) error {
 	defer os.Remove(tmpPath)
 
 	prompt := fmt.Sprintf("[%d] › ", id)
-	// $1 = initial text, $2 = prompt string, $3 = output file
-	const script = `bindkey -v; result=$1; vared -p "$2" result; printf '%s' "$result" > "$3"`
-	cmd := exec.Command("zsh", "-c", script, "--", currentText, prompt, tmpPath)
+	// $1 = initial text, $2 = prompt string, $3 = output file, $4 = notes file
+	// Tab triggers a completion widget: matches #prefix and ,,prefix against existing tags.
+	const script = `
+bindkey -v
+autoload -Uz compinit 2>/dev/null
+
+_note_complete() {
+    local cur=${LBUFFER##* }
+    local -a matches
+    if [[ $cur == \#* ]] || [[ $cur == ,,* ]]; then
+        matches=(${(f)"$(note completions --file "$4" "$cur" 2>/dev/null)"})
+        if (( ${#matches} == 0 )); then return; fi
+        if (( ${#matches} == 1 )); then
+            LBUFFER=${LBUFFER%$cur}${matches[1]}
+        else
+            local common=${matches[1]}
+            for m in ${matches[2,-1]}; do
+                while [[ $m != ${common}* ]]; do common=${common[1,-2]}; done
+            done
+            [[ $common != $cur ]] && LBUFFER=${LBUFFER%$cur}$common
+            zle -M "${(j:  :)matches}"
+        fi
+    fi
+}
+zle -N _note_complete
+bindkey '^I' _note_complete
+
+result=$1; vared -p "$2" result; printf '%s' "$result" > "$3"`
+	cmd := exec.Command("zsh", "-c", script, "--", currentText, prompt, tmpPath, file)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -610,6 +690,12 @@ func main() {
 				os.Exit(1)
 			}
 			err = deleteNotes(os.Stdout, file, ids)
+		case "completions":
+			word := ""
+			if len(contentArgs) > 1 {
+				word = contentArgs[1]
+			}
+			printCompletions(os.Stdout, file, word)
 		default:
 			fmt.Fprintf(os.Stderr, "note: unknown action '%s'\n", action)
 			fmt.Fprintln(os.Stderr, "Run 'note -h' for help.")
