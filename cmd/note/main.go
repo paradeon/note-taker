@@ -36,7 +36,7 @@ func printHelp(w io.Writer, file string) {
 	fmt.Fprintln(w, "    note tags                    List all tags used in the notes file")
 	fmt.Fprintln(w, "    note edit                    Open notes file in nvim")
 	fmt.Fprintln(w, "    note edit <id>               Edit a single note inline (vi-mode)")
-	fmt.Fprintln(w, "    note delete <id>...          Delete notes by id (space or comma separated)")
+	fmt.Fprintln(w, "    note delete <id>...          Delete notes by id, range, or mix: 5 7..9 12.. ,3,6")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Use -f / --file <path> with any action to target a specific file:")
 	fmt.Fprintln(w, "    note add -f <path> <text...>")
@@ -267,22 +267,45 @@ func listTags(w io.Writer, file string) error {
 	return nil
 }
 
-func parseIDs(args []string) ([]int, error) {
+func parseIDs(args []string, maxID int) ([]int, error) {
 	seen := map[int]bool{}
 	var ids []int
+	add := func(n int) {
+		if !seen[n] {
+			seen[n] = true
+			ids = append(ids, n)
+		}
+	}
 	for _, arg := range args {
 		for _, part := range strings.Split(arg, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
 			}
-			n, err := strconv.Atoi(part)
-			if err != nil || n < 1 {
-				return nil, fmt.Errorf("invalid id %q", part)
-			}
-			if !seen[n] {
-				seen[n] = true
-				ids = append(ids, n)
+			if strings.Contains(part, "..") {
+				sides := strings.SplitN(part, "..", 2)
+				loStr, hiStr := strings.TrimSpace(sides[0]), strings.TrimSpace(sides[1])
+				lo, hi := 1, maxID
+				var err error
+				if loStr != "" {
+					if lo, err = strconv.Atoi(loStr); err != nil || lo < 1 {
+						return nil, fmt.Errorf("invalid range %q", part)
+					}
+				}
+				if hiStr != "" {
+					if hi, err = strconv.Atoi(hiStr); err != nil || hi < 1 {
+						return nil, fmt.Errorf("invalid range %q", part)
+					}
+				}
+				for i := lo; i <= hi; i++ {
+					add(i)
+				}
+			} else {
+				n, err := strconv.Atoi(part)
+				if err != nil || n < 1 {
+					return nil, fmt.Errorf("invalid id %q", part)
+				}
+				add(n)
 			}
 		}
 	}
@@ -581,7 +604,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Run 'note' for help.")
 				os.Exit(1)
 			}
-			ids, parseErr := parseIDs(contentArgs[1:])
+			ids, parseErr := parseIDs(contentArgs[1:], nextNoteID(file)-1)
 			if parseErr != nil {
 				fmt.Fprintln(os.Stderr, "note:", parseErr)
 				os.Exit(1)
