@@ -15,6 +15,7 @@ import (
 )
 
 var vidIDRe = regexp.MustCompile(`(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})`)
+var bareIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
 
 // timestamp patterns to strip from VTT/SRT transcripts
 var (
@@ -546,13 +547,18 @@ func main() {
 		doSubs = true
 	}
 
-	url := flag.Arg(0)
-	m := vidIDRe.FindStringSubmatch(url)
-	if m == nil {
-		fmt.Fprintln(os.Stderr, "✗ Could not extract video ID from URL:", url)
+	arg := flag.Arg(0)
+	var url, vidID string
+	if bareIDRe.MatchString(arg) {
+		vidID = arg
+		url = "https://www.youtube.com/watch?v=" + vidID
+	} else if m := vidIDRe.FindStringSubmatch(arg); m != nil {
+		vidID = m[1]
+		url = arg
+	} else {
+		fmt.Fprintln(os.Stderr, "✗ Could not extract video ID from:", arg)
 		os.Exit(1)
 	}
-	vidID := m[1]
 
 	if !doQuiet {
 		fmt.Println("▶ Video ID:", vidID)
