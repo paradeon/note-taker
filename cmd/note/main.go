@@ -429,7 +429,7 @@ func deleteNotes(w io.Writer, file string, ids []int) error {
 	return nil
 }
 
-func editNoteByID(w io.Writer, file string, id int) error {
+func editNoteByID(w io.Writer, file string, id int, fetchURLs bool) error {
 	if !hasContent(file) {
 		return fmt.Errorf("note [%d] not found", id)
 	}
@@ -520,6 +520,9 @@ result=$1; vared -p "$2" result; printf '%s' "$result" > "$3"`
 		return err
 	}
 	newText := strings.TrimSpace(processTags(string(data)))
+	if fetchURLs {
+		newText = processURLs(newText)
+	}
 	if newText == "" {
 		fmt.Fprintln(w, "Note text cannot be empty, edit cancelled.")
 		return nil
@@ -674,7 +677,7 @@ func main() {
 					fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
 					os.Exit(1)
 				}
-				err = editNoteByID(os.Stdout, file, id)
+				err = editNoteByID(os.Stdout, file, id, !flagNoMdurl)
 			} else {
 				err = editNotes(file)
 			}
