@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -10,8 +12,40 @@ import (
 
 var titleRe = regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`)
 
-func fetchTitle(url string) (string, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func isYouTube(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(u.Hostname(), "www.")
+	return host == "youtube.com" || host == "youtu.be"
+}
+
+func fetchYouTubeTitle(videoURL string) (string, error) {
+	apiURL := "https://www.youtube.com/oembed?url=" + url.QueryEscape(videoURL) + "&format=json"
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("oembed status %d", resp.StatusCode)
+	}
+	var data struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	return data.Title, nil
+}
+
+func fetchTitle(rawURL string) (string, error) {
+	if isYouTube(rawURL) {
+		return fetchYouTubeTitle(rawURL)
+	}
+
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -42,7 +76,7 @@ func fetchTitle(url string) (string, error) {
 			buf = buf[len(buf)-overlap:]
 		}
 	}
-	return url, nil
+	return rawURL, nil
 }
 
 func main() {
