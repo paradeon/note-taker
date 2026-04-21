@@ -157,17 +157,143 @@ func slugify(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// parseEntrySet parses a spec like "1,3,5..7" into a set of 1-based indices.
+// An empty spec means "all".
+func parseEntrySet(spec string) (map[int]bool, error) {
+	if spec == "" {
+		return nil, nil
+	}
+	set := map[int]bool{}
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "..") {
+			sides := strings.SplitN(part, "..", 2)
+			loStr, hiStr := strings.TrimSpace(sides[0]), strings.TrimSpace(sides[1])
+			lo, hi := 1, math.MaxInt32
+			var err error
+			if loStr != "" {
+				if lo, err = strconv.Atoi(loStr); err != nil || lo < 1 {
+					return nil, fmt.Errorf("invalid range %q", part)
+				}
+			}
+			if hiStr != "" {
+				if hi, err = strconv.Atoi(hiStr); err != nil || hi < 1 {
+					return nil, fmt.Errorf("invalid range %q", part)
+				}
+			}
+			for i := lo; i <= hi; i++ {
+				set[i] = true
+			}
+		} else {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("invalid id %q", part)
+			}
+			set[n] = true
+		}
+	}
+	return set, nil
+}
+
+func isYouTubeURL(s string) bool {
+	return strings.Contains(s, "youtube.com/") || strings.Contains(s, "youtu.be/")
+}
+
+func resolveStreamURL(url string, ckArgs []string) (string, error) {
+	args := []string{"-f", "bestaudio", "-g", "--no-warnings"}
+	args = append(args, ckArgs...)
+	args = append(args, url)
+	out, err := exec.Command("yt-dlp", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp: %w", err)
+	}
+	line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	if line == "" {
+		return "", fmt.Errorf("no stream URL returned")
+	}
+	return line, nil
+}
+
+func convertM3U8(inFile, outFile string, ckArgs []string, only map[int]bool) error {
+	f, err := os.Open(inFile)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	scanErr := scanner.Err()
+	f.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+
+	// number YouTube entries so -n indices are stable and predictable
+	ytIndex := 0
+	total := 0
+	for _, l := range lines {
+		if isYouTubeURL(l) {
+			ytIndex++
+			if only == nil || only[ytIndex] {
+				total++
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "⟳ Resolving %d YouTube URL(s)…\n", total)
+
+	ytIndex = 0
+	done := 0
+	for i, l := range lines {
+		if !isYouTubeURL(l) {
+			continue
+		}
+		ytIndex++
+		if only != nil && !only[ytIndex] {
+			continue
+		}
+		done++
+		fmt.Fprintf(os.Stderr, "  [%d/%d] (#%d) %s\n", done, total, ytIndex, l)
+		resolved, err := resolveStreamURL(l, ckArgs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
+			continue
+		}
+		lines[i] = resolved
+	}
+
+	out, err := os.Create(outFile)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	bw := bufio.NewWriter(out)
+	for _, l := range lines {
+		fmt.Fprintln(bw, l)
+	}
+	return bw.Flush()
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: yt2m3u8 [flags] <youtube-url>")
+	fmt.Fprintln(os.Stderr, "       yt2m3u8 [flags] -i <input.m3u8>")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Flags:")
-	fmt.Fprintln(os.Stderr, "  -o <file>            Output file (default: <playlist-title>.m3u8)")
+	fmt.Fprintln(os.Stderr, "  -i <file>            Input m3u8; resolve YouTube entries to stream URLs")
+	fmt.Fprintln(os.Stderr, "  -n <ids>             Entries to resolve: list or range, e.g. 1,3,5..7 (default: all)")
+	fmt.Fprintln(os.Stderr, "  -o <file>            Output file (default: <playlist-title>.m3u8 or <input>-resolved.m3u8)")
 	fmt.Fprintln(os.Stderr, "  -g                   Fetch genre per video (slow — one request per track)")
 	fmt.Fprintln(os.Stderr, "  -b <browser>         Cookies from browser (e.g. chrome, firefox, safari)")
 	fmt.Fprintln(os.Stderr, "  --cookies <file>     Path to Netscape cookies file")
 }
 
 func main() {
+	inFile := flag.String("i", "", "Input m3u8 file")
+	entrySpec := flag.String("n", "", "Entries to resolve (e.g. 1,3,5..7)")
 	outFile := flag.String("o", "", "Output file")
 	doGenre := flag.Bool("g", false, "Fetch genre per video (slow)")
 	browser := flag.String("b", "", "Cookies from browser")
@@ -175,13 +301,33 @@ func main() {
 	flag.Usage = printUsage
 	flag.Parse()
 
+	ckArgs := cookieArgs(*browser, *cookiesFilePath)
+
+	if *inFile != "" {
+		only, err := parseEntrySet(*entrySpec)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "✗", err)
+			os.Exit(1)
+		}
+		out := *outFile
+		if out == "" {
+			base := strings.TrimSuffix(*inFile, ".m3u8")
+			out = base + "-resolved.m3u8"
+		}
+		if err := convertM3U8(*inFile, out, ckArgs, only); err != nil {
+			fmt.Fprintln(os.Stderr, "✗", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "✓ → %s\n", out)
+		return
+	}
+
 	if flag.NArg() == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
 	url := flag.Arg(0)
-	ckArgs := cookieArgs(*browser, *cookiesFilePath)
 
 	fmt.Fprintln(os.Stderr, "⟳ Fetching playlist…")
 	tracks, playlistTitle, err := fetchPlaylist(url, ckArgs)
