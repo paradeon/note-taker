@@ -764,7 +764,19 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Run 'note' for help.")
 				os.Exit(1)
 			}
-			ids, parseErr := parseIDs(contentArgs[1:], nextNoteID(file)-1)
+			maxID := nextNoteID(file) - 1
+			deleteArgs := make([]string, len(contentArgs[1:]))
+			copy(deleteArgs, contentArgs[1:])
+			for i, a := range deleteArgs {
+				if a == "last" {
+					if maxID < 1 {
+						fmt.Fprintln(os.Stderr, "note: no notes to delete")
+						os.Exit(1)
+					}
+					deleteArgs[i] = strconv.Itoa(maxID)
+				}
+			}
+			ids, parseErr := parseIDs(deleteArgs, maxID)
 			if parseErr != nil {
 				fmt.Fprintln(os.Stderr, "note:", parseErr)
 				os.Exit(1)
