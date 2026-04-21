@@ -279,8 +279,8 @@ func convertM3U8(inFile, outFile string, ckArgs []string, only map[int]bool) err
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: yt2m3u8 [flags] <youtube-url>")
-	fmt.Fprintln(os.Stderr, "       yt2m3u8 [flags] -i <input.m3u8>")
+	fmt.Fprintln(os.Stderr, "usage: yt2m3u [flags] <youtube-url>")
+	fmt.Fprintln(os.Stderr, "       yt2m3u [flags] -i <input.m3u8>")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Flags:")
 	fmt.Fprintln(os.Stderr, "  -i <file>            Input m3u8; resolve YouTube entries to stream URLs")
