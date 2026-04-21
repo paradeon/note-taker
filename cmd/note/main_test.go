@@ -203,8 +203,8 @@ func TestAppendNote_OutputConfirmation(t *testing.T) {
 
 	appendNote(&buf, path, "hello")
 	out := buf.String()
-	if !strings.Contains(out, "✓ Note saved") {
-		t.Errorf("expected confirmation message, got: %q", out)
+	if !strings.Contains(out, "✓ Note [1] saved") {
+		t.Errorf("expected confirmation message with ID, got: %q", out)
 	}
 	if !strings.Contains(out, path) {
 		t.Errorf("expected file path in confirmation, got: %q", out)
@@ -799,6 +799,87 @@ func TestProcessURLs_FallsBackToURLOnEmptyTitle(t *testing.T) {
 	got := processURLs(srv.URL)
 	if got != srv.URL {
 		t.Errorf("expected bare URL fallback, got %q", got)
+	}
+}
+
+// ── reindexNotes ─────────────────────────────────────────────────────────────
+
+func TestReindexNotes_NoFile(t *testing.T) {
+	var buf bytes.Buffer
+	reindexNotes(&buf, "/tmp/no-such-file-xyz.md")
+	if !strings.Contains(buf.String(), "No notes yet") {
+		t.Errorf("expected 'No notes yet', got: %q", buf.String())
+	}
+}
+
+func TestReindexNotes_AlreadySequential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "# Quick Notes\n\n- [1] **2026-01-01 Thu 09:00** — buy milk\n- [2] **2026-01-02 Fri 10:00** — call dentist\n")
+	var buf bytes.Buffer
+	if err := reindexNotes(&buf, path); err != nil {
+		t.Fatal(err)
+	}
+	content := readFile(t, path)
+	if !strings.Contains(content, "[1]") || !strings.Contains(content, "[2]") {
+		t.Errorf("IDs should be unchanged:\n%s", content)
+	}
+	if strings.Contains(buf.String(), "→") {
+		t.Errorf("no remap output expected when already sequential, got: %q", buf.String())
+	}
+}
+
+func TestReindexNotes_GapsAreClosedSequentially(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "# Quick Notes\n\n- [1] **2026-01-01 Thu 09:00** — a\n- [3] **2026-01-02 Fri 10:00** — b\n- [7] **2026-01-03 Sat 11:00** — c\n")
+	var buf bytes.Buffer
+	if err := reindexNotes(&buf, path); err != nil {
+		t.Fatal(err)
+	}
+	content := readFile(t, path)
+	for _, want := range []string{"[1]", "[2]", "[3]"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected %s in reindexed file:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "[7]") {
+		t.Errorf("[7] should have been renumbered:\n%s", content)
+	}
+}
+
+func TestReindexNotes_ReportsRemappedIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "# Quick Notes\n\n- [1] **2026-01-01 Thu 09:00** — a\n- [5] **2026-01-02 Fri 10:00** — b\n")
+	var buf bytes.Buffer
+	reindexNotes(&buf, path)
+	out := buf.String()
+	if !strings.Contains(out, "[5] → [2]") {
+		t.Errorf("expected remap report, got: %q", out)
+	}
+}
+
+func TestReindexNotes_NoteTextPreserved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "# Quick Notes\n\n- [1] **2026-01-01 Thu 09:00** — buy milk\n- [9] **2026-01-02 Fri 10:00** — call dentist\n")
+	var buf bytes.Buffer
+	if err := reindexNotes(&buf, path); err != nil {
+		t.Fatal(err)
+	}
+	content := readFile(t, path)
+	if !strings.Contains(content, "buy milk") || !strings.Contains(content, "call dentist") {
+		t.Errorf("note text should be preserved:\n%s", content)
+	}
+}
+
+func TestReindexNotes_HeaderPreserved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, path, "# Quick Notes\n\n- [2] **2026-01-01 Thu 09:00** — a\n")
+	var buf bytes.Buffer
+	if err := reindexNotes(&buf, path); err != nil {
+		t.Fatal(err)
+	}
+	content := readFile(t, path)
+	if !strings.HasPrefix(content, "# Quick Notes") {
+		t.Errorf("header should be preserved:\n%s", content)
 	}
 }
 

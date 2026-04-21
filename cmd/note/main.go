@@ -31,16 +31,17 @@ func printHelp(w io.Writer, file string) {
 	fmt.Fprintln(w, "    note add <text...>           Append a timestamped note (URLs auto-linked)")
 	fmt.Fprintln(w, "    note add \"quoted text\"       Quoted or unquoted — both work")
 	fmt.Fprintln(w, "    note add --no-mdurl <text>   Skip auto-linking URLs")
-	fmt.Fprintln(w, "    note list                    Display all notes without timestamps")
-	fmt.Fprintln(w, "    note list -t <tag>[,<tag>]   Filter notes by one or more tags")
+	fmt.Fprintln(w, "    note show                    Display all notes without timestamps")
+	fmt.Fprintln(w, "    note show -t <tag>[,<tag>]   Filter notes by one or more tags")
 	fmt.Fprintln(w, "    note tags                    List all tags used in the notes file")
 	fmt.Fprintln(w, "    note edit                    Open notes file in nvim")
 	fmt.Fprintln(w, "    note edit <id>               Edit a single note inline (vi-mode)")
 	fmt.Fprintln(w, "    note delete <id>...          Delete notes by id, range, or mix: 5 7..9 12.. ,3,6")
+	fmt.Fprintln(w, "    note reindex                 Reassign note IDs sequentially from 1")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Use -f / --file <path> with any action to target a specific file:")
 	fmt.Fprintln(w, "    note add -f <path> <text...>")
-	fmt.Fprintln(w, "    note list -f <path>")
+	fmt.Fprintln(w, "    note show -f <path>")
 	fmt.Fprintln(w, "    note edit -f <path>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Tags:")
@@ -432,6 +433,61 @@ func deleteNotes(w io.Writer, file string, ids []int) error {
 	return nil
 }
 
+func reindexNotes(w io.Writer, file string) error {
+	if !hasContent(file) {
+		fmt.Fprintln(w, "No notes yet.")
+		return nil
+	}
+
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	scanErr := scanner.Err()
+	f.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+
+	next := 1
+	for i, line := range lines {
+		if m := noteIDLineRe.FindStringSubmatchIndex(line); m != nil {
+			oldID, _ := strconv.Atoi(line[m[2]:m[3]])
+			lines[i] = line[:m[2]] + strconv.Itoa(next) + line[m[3]:]
+			if oldID != next {
+				fmt.Fprintf(w, "  [%d] → [%d]\n", oldID, next)
+			}
+			next++
+		}
+	}
+
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	out, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	bw := bufio.NewWriter(out)
+	for _, line := range lines {
+		fmt.Fprintln(bw, line)
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(w, "✓ Reindexed")
+	return nil
+}
+
 func editNoteByID(w io.Writer, file string, id int, fetchURLs bool) error {
 	if !hasContent(file) {
 		return fmt.Errorf("note [%d] not found", id)
@@ -590,7 +646,7 @@ func appendNote(w io.Writer, file, text string) error {
 		return err
 	}
 
-	fmt.Fprintln(w, "✓ Note saved →", file)
+	fmt.Fprintf(w, "✓ Note [%d] saved → %s\n", id, file)
 	return nil
 }
 
@@ -656,29 +712,47 @@ func main() {
 					text = processURLs(text)
 				}
 				err = appendNote(os.Stdout, file, text)
-		case "list":
+		case "show":
 			var filterTags []string
 			if flagTag != "" {
 				filterTags = strings.Split(flagTag, ",")
 			}
 			var filterID int
 			if len(contentArgs) > 1 {
-				filterID, err = strconv.Atoi(contentArgs[1])
-				if err != nil || filterID < 1 {
-					fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
-					os.Exit(1)
+				if contentArgs[1] == "last" {
+					filterID = nextNoteID(file) - 1
+					if filterID < 1 {
+						fmt.Fprintln(os.Stderr, "note: no notes")
+						os.Exit(1)
+					}
+				} else {
+					filterID, err = strconv.Atoi(contentArgs[1])
+					if err != nil || filterID < 1 {
+						fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
+						os.Exit(1)
+					}
+					err = nil
 				}
-				err = nil
 			}
 			err = listNotes(os.Stdout, file, filterTags, filterID)
 		case "tags":
 			err = listTags(os.Stdout, file)
 		case "edit":
 			if len(contentArgs) > 1 {
-				id, parseErr := strconv.Atoi(contentArgs[1])
-				if parseErr != nil || id < 1 {
-					fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
-					os.Exit(1)
+				var id int
+				if contentArgs[1] == "last" {
+					id = nextNoteID(file) - 1
+					if id < 1 {
+						fmt.Fprintln(os.Stderr, "note: no notes to edit")
+						os.Exit(1)
+					}
+				} else {
+					var parseErr error
+					id, parseErr = strconv.Atoi(contentArgs[1])
+					if parseErr != nil || id < 1 {
+						fmt.Fprintf(os.Stderr, "note: invalid id %q\n", contentArgs[1])
+						os.Exit(1)
+					}
 				}
 				err = editNoteByID(os.Stdout, file, id, !flagNoMdurl)
 			} else {
@@ -696,6 +770,8 @@ func main() {
 				os.Exit(1)
 			}
 			err = deleteNotes(os.Stdout, file, ids)
+		case "reindex":
+			err = reindexNotes(os.Stdout, file)
 		case "completions":
 			word := ""
 			if len(contentArgs) > 1 {

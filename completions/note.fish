@@ -39,9 +39,9 @@ complete -c note -s t -l tag  -r -d 'Filter by tag(s), comma-separated' -a "(__n
 complete -c note -s h -l help -d 'Show help'
 
 # Actions (only when no action has been given yet)
-set -l actions add list tags edit delete
+set -l actions add show tags edit delete
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a add    -d 'Append a timestamped note'
-complete -c note -n "not __fish_seen_subcommand_from $actions" -a list   -d 'Display all notes'
+complete -c note -n "not __fish_seen_subcommand_from $actions" -a show   -d 'Display all notes'
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a tags   -d 'List all tags'
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a edit   -d 'Open notes in nvim (or edit by id)'
 complete -c note -n "not __fish_seen_subcommand_from $actions" -a delete -d 'Delete notes by id'
@@ -58,8 +58,8 @@ complete -c note -n "__fish_seen_subcommand_from add" \
         end)"
 
 
-# list: -t / --tag with tag completion
-complete -c note -n "__fish_seen_subcommand_from list" -s t -l tag -r -d 'Filter by tag(s)' -a "(__note_tags)"
+# show: -t / --tag with tag completion
+complete -c note -n "__fish_seen_subcommand_from show" -s t -l tag -r -d 'Filter by tag(s)' -a "(__note_tags)"
 
 # edit / delete: complete note IDs
 complete -c note -n "__fish_seen_subcommand_from edit delete" -a "(__note_ids)" -d 'Note id'
