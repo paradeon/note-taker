@@ -802,6 +802,46 @@ func TestProcessURLs_FallsBackToURLOnEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestProcessURLs_ExpandsBareURLWithBracketsInTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><head><title>Some [HD] Video</title></head></html>`)
+	}))
+	defer srv.Close()
+
+	got := processURLs(srv.URL)
+	want := fmt.Sprintf("[Some (HD) Video](%s)", srv.URL)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestProcessURLs_NormalizesBracketsInAlreadyFormattedLink(t *testing.T) {
+	input := "[Title [subtitle]](https://example.com)"
+	got := processURLs(input)
+	want := "[Title (subtitle)](https://example.com)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestProcessURLs_NormalizesDeepNestedBrackets(t *testing.T) {
+	input := "[[outer [inner] text]](https://example.com)"
+	got := processURLs(input)
+	want := "[(outer (inner) text)](https://example.com)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestProcessURLs_NormalizesMultipleBracketGroups(t *testing.T) {
+	input := "[[Part 1] [Part 2] Title](https://example.com)"
+	got := processURLs(input)
+	want := "[(Part 1) (Part 2) Title](https://example.com)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // ── reindexNotes ─────────────────────────────────────────────────────────────
 
 func TestReindexNotes_NoFile(t *testing.T) {

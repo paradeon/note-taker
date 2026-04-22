@@ -11,6 +11,64 @@ import (
 
 var htmlTitleRe = regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`)
 
+var bracketReplacer = strings.NewReplacer("[", "(", "]", ")")
+
+// NormalizeBrackets replaces [ and ] with ( and ) in s.
+func NormalizeBrackets(s string) string { return bracketReplacer.Replace(s) }
+
+// ParseMDURL parses a markdown link [desc](url), handling nested brackets in desc.
+// Returns ok=false if s is not a valid markdown link.
+func ParseMDURL(s string) (desc, rawURL string, ok bool) {
+	if len(s) == 0 || s[0] != '[' {
+		return
+	}
+	depth, i := 1, 1
+	for i < len(s) && depth > 0 {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		}
+		i++
+	}
+	if depth != 0 || i >= len(s) || s[i] != '(' || s[len(s)-1] != ')' {
+		return
+	}
+	return s[1 : i-1], s[i+1 : len(s)-1], true
+}
+
+// FindMDLinkEnd returns the exclusive end index of a markdown link [desc](url)
+// that begins at position start in s, using the same bracket-counting logic as
+// ParseMDURL. Returns -1 if no valid markdown link starts there.
+func FindMDLinkEnd(s string, start int) int {
+	if start >= len(s) || s[start] != '[' {
+		return -1
+	}
+	depth, i := 1, start+1
+	for i < len(s) && depth > 0 {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		}
+		i++
+	}
+	// i now points one past the matching ']'
+	if depth != 0 || i >= len(s) || s[i] != '(' {
+		return -1
+	}
+	i++ // skip '('
+	for i < len(s) && s[i] != ')' {
+		i++
+	}
+	if i >= len(s) {
+		return -1
+	}
+	return i + 1
+}
+
 func isYouTube(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {

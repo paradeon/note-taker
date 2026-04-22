@@ -218,8 +218,6 @@ func hasAnyTag(line string, tags []string) bool {
 
 var tagRe = regexp.MustCompile(`#(\w+)`)
 
-var urlOrMdLinkRe = regexp.MustCompile(`\[[^\]]*\]\(https?://[^)]+\)|https?://\S+`)
-
 func collectTagNames(file string) []string {
 	if !hasContent(file) {
 		return nil
@@ -274,19 +272,55 @@ func printCompletions(w io.Writer, file, word string) {
 	}
 }
 
-// processURLs replaces bare URLs in text with markdown links.
-// Already-formatted [text](url) links are left unchanged.
+// processURLs expands bare URLs to markdown links and normalizes square brackets
+// in the description part of already-formatted markdown links to round brackets.
+// Uses the same bracket-counting logic as mdurl.ParseMDURL, so arbitrary nesting
+// in descriptions is handled correctly.
 func processURLs(text string) string {
-	return urlOrMdLinkRe.ReplaceAllStringFunc(text, func(match string) string {
-		if match[0] == '[' {
-			return match
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] == '[' {
+			if end := mdurl.FindMDLinkEnd(text, i); end > 0 {
+				if desc, u, ok := mdurl.ParseMDURL(text[i:end]); ok && isHTTPURL(u) {
+					b.WriteByte('[')
+					b.WriteString(mdurl.NormalizeBrackets(desc))
+					b.WriteString("](")
+					b.WriteString(u)
+					b.WriteByte(')')
+					i = end
+					continue
+				}
+			}
+			b.WriteByte(text[i])
+			i++
+			continue
 		}
-		title := mdurl.FetchTitle(match)
-		if title == "" {
-			return match
+		if strings.HasPrefix(text[i:], "https://") || strings.HasPrefix(text[i:], "http://") {
+			j := i
+			for j < len(text) && text[j] != ' ' && text[j] != '\t' && text[j] != '\n' && text[j] != '\r' {
+				j++
+			}
+			rawURL := text[i:j]
+			if title := mdurl.FetchTitle(rawURL); title != "" {
+				b.WriteByte('[')
+				b.WriteString(mdurl.NormalizeBrackets(title))
+				b.WriteString("](")
+				b.WriteString(rawURL)
+				b.WriteByte(')')
+			} else {
+				b.WriteString(rawURL)
+			}
+			i = j
+			continue
 		}
-		return "[" + title + "](" + match + ")"
-	})
+		b.WriteByte(text[i])
+		i++
+	}
+	return b.String()
+}
+
+func isHTTPURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 func listTags(w io.Writer, file string) error {
